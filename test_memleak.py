@@ -88,29 +88,31 @@ def npz_sampler(row):
     sample : dict
         An np.ndarray, under 'x'.
     """
-    x = np.load(row.filename)['x']
+    with np.load(row.filename) as data:
+        x = data['x']
+
     while True:
         i = np.random.randint(len(x))
         yield dict(x=x[i:i + 1])
 
 
-def sample_streamer(index, working_size, lam):
-    seed_pool = [pescador.Streamer(npz_sampler, row)
+def sample_streamer(index, working_size, lam, sample_func):
+    seed_pool = [pescador.Streamer(sample_func, row)
                  for idx, row in index.iterrows()]
 
-    return pescador.mux(seed_pool, n_samples=None, k=working_size, lam=lam,
-                        with_replacement=True)
+    return pescador.mux(seed_pool, n_samples=None, k=working_size,
+                        lam=lam, with_replacement=True)
 
 
 def test_stream_many(index):
     """Should consume minimal memory, but will crash after 5k samples."""
     n_samples = 50000
     print("Streaming data")
-    stream = sample_streamer(index, working_size=20, lam=5)
-    data = []
+    stream = sample_streamer(index, working_size=20,
+                             lam=5, sample_func=npz_sampler)
+
     for n, sample in enumerate(stream):
-        if (len(data) % 100) == 0 and data and VERBOSE:
-            print("{} / {}: {}".format(n, len(index), data[-1]['x'].shape))
-        elif len(data) > n_samples:
+        if (n % 100) == 0 and n and VERBOSE:
+            print("{} / {}: {}".format(n, n_samples, sample['x'].shape))
+        elif n > n_samples:
             break
-        data += [sample]
