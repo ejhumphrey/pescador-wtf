@@ -2,3 +2,4 @@ numpy
 pandas
 pytest
 pescador
+psutil==5.0.0

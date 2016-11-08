@@ -18,6 +18,7 @@ import numpy as np
 import os
 import pandas as pd
 import pescador
+import psutil
 import tempfile
 import shutil
 import uuid
@@ -28,6 +29,8 @@ TSIZE = (4096, 128)
 VERBOSE = True
 
 
+# Fixtures
+# --------
 @pytest.fixture(scope='module')
 def workspace(request):
     """Returns a path to a temporary directory for writing data."""
@@ -45,6 +48,8 @@ def workspace(request):
 def index(workspace):
     recs = []
     index = []
+    if VERBOSE:
+        print()
     for n in range(NUM_ARRAYS):
         if (n % 100) == 0 and VERBOSE:
             print("{} / {}".format(n, NUM_ARRAYS))
@@ -59,23 +64,14 @@ def index(workspace):
     return pd.DataFrame.from_records(recs, index=index)
 
 
-def test_setup(index):
-    print("NumPy: {}".format(np.version.version))
-    print("Pandas: {}".format(pd.__version__))
-    print("Pescador: {}".format(pescador.version.version))
+# Functions
+# ---------
+def data_reader(index):
+    for fn in index.filename:
+        yield dict(x=np.load(fn)['x'])
 
 
-def test_read_all(index):
-    """Will consume a teeny bit of memory"""
-    print("Loading all data....")
-    data = []
-    for n, fn in enumerate(index.filename):
-        if (len(data) % 100) == 0 and data and VERBOSE:
-            print("{} / {}: {}".format(n, len(index), data[-1].shape))
-        data += [np.load(fn)['x']]
-
-
-def npz_sampler(row):
+def freeing_sampler_a(row):
     """Draw random rows from a record.
 
     Parameters
@@ -93,6 +89,24 @@ def npz_sampler(row):
 
     while True:
         i = np.random.randint(len(x))
+        yield dict(x=np.array(x[i:i + 1]))
+
+
+def freeing_sampler_b(row):
+    """
+    """
+    x = np.load(row.filename)['x']
+    while True:
+        i = np.random.randint(len(x))
+        yield dict(x=np.array(x[i:i + 1]))
+
+
+def leaky_sampler(row):
+    with np.load(row.filename) as data:
+        x = data['x']
+
+    while True:
+        i = np.random.randint(len(x))
         yield dict(x=x[i:i + 1])
 
 
@@ -104,15 +118,67 @@ def sample_streamer(index, working_size, lam, sample_func):
                         lam=lam, with_replacement=True)
 
 
-def test_stream_many(index):
-    """Should consume minimal memory, but will crash after 5k samples."""
-    n_samples = 50000
-    print("Streaming data")
-    stream = sample_streamer(index, working_size=20,
-                             lam=5, sample_func=npz_sampler)
+def is_out_of_memory(gb_free=0.5):
+    stats = psutil.virtual_memory()
+    return (stats.free / 1024 / 1024 / 1024) <= gb_free
 
+
+def consume(stream, max_samples, gb_free, should_fail, print_freq=100):
+    if VERBOSE:
+        print()
+
+    outputs = []
     for n, sample in enumerate(stream):
-        if (n % 100) == 0 and n and VERBOSE:
-            print("{} / {}: {}".format(n, n_samples, sample['x'].shape))
-        elif n > n_samples:
+        x = sample['x']
+        outputs += [x]
+        mem_maxed = is_out_of_memory(gb_free)
+
+        if (n % print_freq) == 0 and n and VERBOSE:
+            print("{} / {}: {}".format(n, max_samples, x.shape))
+
+        if n > max_samples or mem_maxed:
             break
+
+    assert mem_maxed == should_fail
+
+
+# Tests
+# -----
+def test_setup(index):
+    print("NumPy: {}".format(np.version.version))
+    print("Pandas: {}".format(pd.__version__))
+    print("Pescador: {}".format(pescador.version.version))
+
+
+def test_is_out_of_memory():
+    assert not is_out_of_memory(2.0)
+
+
+@pytest.mark.skipif(is_out_of_memory(2.0), reason="Requires more free memory.")
+def test_read_all(index):
+    """Will consume less than 1GB of memory"""
+    consume(data_reader(index), len(index), 1.0, False, print_freq=1)
+
+
+@pytest.mark.skipif(is_out_of_memory(2.0), reason="Requires more free memory.")
+def test_sample_streamer_freeing_a(index):
+    """Should consume minimal memory."""
+    stream = sample_streamer(index, working_size=20, lam=5,
+                             sample_func=freeing_sampler_a)
+    consume(stream, 10000, 1.0, False, print_freq=500)
+
+
+@pytest.mark.skipif(is_out_of_memory(2.0), reason="Requires more free memory.")
+def test_sample_streamer_freeing_b(index):
+    """Should consume minimal memory."""
+    stream = sample_streamer(index, working_size=20, lam=5,
+                             sample_func=freeing_sampler_b)
+    consume(stream, 10000, 1.0, False, print_freq=500)
+
+
+@pytest.mark.skipif(is_out_of_memory(2.0), reason="Requires more free memory.")
+def test_sample_streamer_leaky(index):
+    """Should consume minimal memory, but will crash after 5k samples."""
+    stream = sample_streamer(index, working_size=20, lam=5,
+                             sample_func=leaky_sampler)
+    consume(stream, 10000, 1.0, True, print_freq=100)
