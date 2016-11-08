@@ -72,18 +72,7 @@ def data_reader(index):
 
 
 def freeing_sampler_a(row):
-    """Draw random rows from a record.
-
-    Parameters
-    ----------
-    row : pd.Series
-        Row containing a pointer to an npz file under "filename".
-
-    Yields
-    ------
-    sample : dict
-        An np.ndarray, under 'x'.
-    """
+    """writeme"""
     with np.load(row.filename) as data:
         x = data['x']
 
@@ -93,18 +82,38 @@ def freeing_sampler_a(row):
 
 
 def freeing_sampler_b(row):
-    """
-    """
+    """writeme"""
     x = np.load(row.filename)['x']
     while True:
         i = np.random.randint(len(x))
         yield dict(x=np.array(x[i:i + 1]))
 
 
-def leaky_sampler(row):
+def freeing_sampler_c(row):
+    """writeme"""
     with np.load(row.filename) as data:
         x = data['x']
 
+    x_obs = np.zeros_like(x[:1])
+    while True:
+        i = np.random.randint(len(x))
+        np.copyto(x_obs, x[i:i + 1])
+        yield dict(x=x_obs)
+
+
+def leaky_sampler_a(row):
+    """writeme"""
+    with np.load(row.filename) as data:
+        x = data['x']
+
+    while True:
+        i = np.random.randint(len(x))
+        yield dict(x=x[i:i + 1])
+
+
+def leaky_sampler_b(row):
+    """writeme"""
+    x = np.array(np.load(row.filename)['x'])
     while True:
         i = np.random.randint(len(x))
         yield dict(x=x[i:i + 1])
@@ -177,8 +186,16 @@ def test_sample_streamer_freeing_b(index):
 
 
 @pytest.mark.skipif(is_out_of_memory(2.0), reason="Requires more free memory.")
+def test_sample_streamer_freeing_c(index):
+    """Should consume minimal memory."""
+    stream = sample_streamer(index, working_size=20, lam=5,
+                             sample_func=freeing_sampler_c)
+    consume(stream, 10000, 1.0, False, print_freq=500)
+
+
+@pytest.mark.skipif(is_out_of_memory(2.0), reason="Requires more free memory.")
 def test_sample_streamer_leaky(index):
     """Should consume minimal memory, but will crash after 5k samples."""
     stream = sample_streamer(index, working_size=20, lam=5,
-                             sample_func=leaky_sampler)
+                             sample_func=leaky_sampler_a)
     consume(stream, 10000, 1.0, True, print_freq=100)
